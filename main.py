@@ -5,9 +5,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 import ta
 
 # ================= CONFIG =================
-
-TOKEN = "8371364402:AAGE05SlWGhtZNMG0ZnE-kG0vAxqcAb8tiE"
-FINNHUB_KEY = "d5uhih1r01qr4f898u5gd5uhih1r01qr4f898u60"
+TOKEN = "8371364402:AAGZ2cvg-ORwnKcnyjxeA-Npl_alW2GK8Tw"
+FINNHUB_KEY = "d5ujrrpr01qr4f89gi70d5ujrrpr01qr4f89gi7g"
 
 WARNING = "\n\n⚠️ البوت لغرض التعلم فقط والتداول تحت مسؤوليتك الشخصية"
 
