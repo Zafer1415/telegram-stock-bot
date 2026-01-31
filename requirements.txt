@@ -1,4 +1,2 @@
 requests
-pandas
-python-telegram-bot
-ta
+python-telegram-bot==20.3
