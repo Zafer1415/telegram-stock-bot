@@ -1,14 +1,15 @@
 import requests
 import pandas as pd
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import ta
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ================= CONFIG =================
+
 TOKEN = "8371364402:AAGZ2cvg-ORwnKcnyjxeA-Npl_alW2GK8Tw"
 FINNHUB_KEY = "d5ujrrpr01qr4f89gi70d5ujrrpr01qr4f89gi7g"
 
-WARNING = "\n\n⚠️ البوت لغرض التعلم فقط والتداول تحت مسؤوليتك الشخصية"
+WARNING = "\n\n⚠️ البوت للتعلم فقط والتداول على مسؤوليتك الشخصية"
 
 # ================= DATA =================
 
@@ -18,16 +19,19 @@ def get_price(symbol):
     return r.get("c")
 
 def get_candles(symbol, resolution):
-    url = f"https://finnhub.io/api/v1/stock/candle"
+    url = "https://finnhub.io/api/v1/stock/candle"
     params = {
         "symbol": symbol,
         "resolution": resolution,
         "count": 200,
         "token": FINNHUB_KEY
     }
+
     r = requests.get(url, params=params).json()
+
     if r.get("s") != "ok":
         return None
+
     return pd.DataFrame({
         "close": r["c"],
         "high": r["h"],
@@ -38,13 +42,13 @@ def get_candles(symbol, resolution):
 def get_sector(symbol):
     url = f"https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={FINNHUB_KEY}"
     r = requests.get(url).json()
-    return r.get("finnhubIndustry","غير معروف")
+    return r.get("finnhubIndustry", "غير معروف")
 
 # ================= ANALYSIS =================
 
 def trend(df):
-    ema20 = ta.trend.EMAIndicator(df["close"],20).ema_indicator()
-    ema50 = ta.trend.EMAIndicator(df["close"],50).ema_indicator()
+    ema20 = ta.trend.EMAIndicator(df["close"], 20).ema_indicator()
+    ema50 = ta.trend.EMAIndicator(df["close"], 50).ema_indicator()
 
     if ema20.iloc[-1] > ema50.iloc[-1]:
         return "صاعد 📈"
@@ -54,44 +58,42 @@ def trend(df):
         return "متذبذب ⚖️"
 
 def support_resistance(df):
-    support = round(df["low"].tail(30).min(),2)
-    resistance = round(df["high"].tail(30).max(),2)
+    support = round(df["low"].tail(30).min(), 2)
+    resistance = round(df["high"].tail(30).max(), 2)
     return support, resistance
 
 def liquidity(df):
     avg = df["volume"].mean()
     last = df["volume"].iloc[-1]
 
-    if last > avg*1.5:
+    if last > avg * 1.5:
         return "عالية 💧"
-    elif last < avg*0.7:
+    elif last < avg * 0.7:
         return "ضعيفة ❄️"
     else:
         return "طبيعية ⚖️"
 
-def build_targets(price, direction, support, resistance):
+def build_targets(direction, support, resistance):
+
+    diff = resistance - support
 
     if direction == "صاعد 📈":
         targets = [
             resistance,
-            round(resistance + (resistance-support)*0.5,2),
-            round(resistance + (resistance-support),2)
+            round(resistance + diff * 0.5, 2),
+            round(resistance + diff, 2)
         ]
-        stop = support
-
-        return targets, [], stop
+        return targets, None, support
 
     if direction == "هابط 📉":
         targets = [
             support,
-            round(support - (resistance-support)*0.5,2),
-            round(support - (resistance-support),2)
+            round(support - diff * 0.5, 2),
+            round(support - diff, 2)
         ]
-        stop = resistance
+        return None, targets, resistance
 
-        return [], targets, stop
-
-    return [], [], None
+    return None, None, None
 
 # ================= MAIN =================
 
@@ -99,14 +101,14 @@ def analyze(symbol):
 
     price = get_price(symbol)
     if not price:
-        return "❌ لم يتم جلب بيانات السهم"
+        return "❌ لم يتم جلب السعر"
 
-    df_day = get_candles(symbol,"60")
-    df_week = get_candles(symbol,"D")
-    df_fast = get_candles(symbol,"5")
+    df_day = get_candles(symbol, "60")
+    df_week = get_candles(symbol, "D")
+    df_fast = get_candles(symbol, "5")
 
-    if df_day is None:
-        return "❌ لم يتم جلب البيانات"
+    if df_day is None or df_week is None or df_fast is None:
+        return "❌ مشكلة في البيانات"
 
     trend_general = trend(df_week)
     trend_live = trend(df_fast)
@@ -117,8 +119,7 @@ def analyze(symbol):
     liq = liquidity(df_fast)
     sector = get_sector(symbol)
 
-    targets_up, targets_down, stop_loss = build_targets(
-        price,
+    up_targets, down_targets, stop = build_targets(
         trend_general,
         support_day,
         resistance_day
@@ -147,26 +148,26 @@ def analyze(symbol):
 ━━━━━━━━━━━━━━
 """
 
-    if targets_up:
+    if up_targets:
         text += f"""
 🎯 أهداف الصعود:
-• {targets_up[0]}
-• {targets_up[1]}
-• {targets_up[2]}
+• {up_targets[0]}
+• {up_targets[1]}
+• {up_targets[2]}
 
 🛑 وقف الخسارة:
-• {stop_loss}
+• {stop}
 """
 
-    if targets_down:
+    if down_targets:
         text += f"""
 🎯 أهداف الهبوط:
-• {targets_down[0]}
-• {targets_down[1]}
-• {targets_down[2]}
+• {down_targets[0]}
+• {down_targets[1]}
+• {down_targets[2]}
 
 🛑 وقف الخسارة:
-• {stop_loss}
+• {stop}
 """
 
     return text + WARNING
@@ -175,9 +176,8 @@ def analyze(symbol):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 أهلاً بك في Radar Market\n"
-        "أرسل رمز السهم أو المؤشر مثل:\n"
-        "TSLA\nAAPL\nSPX\nNDX"
+        "👋 أهلاً بك في بوت تحليل الأسهم\n"
+        "أرسل رمز السهم مثل:\nTSLA\nAAPL\nSPX"
         + WARNING
     )
 
@@ -191,9 +191,14 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= RUN =================
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-print("✅ BOT RUNNING...")
-app.run_polling()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+
+    print("✅ BOT RUNNING...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
