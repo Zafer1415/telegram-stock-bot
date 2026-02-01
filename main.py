@@ -1,137 +1,153 @@
 import requests
 import pandas as pd
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ================= CONFIG =================
-
-TOKEN = "8371364402:AAGZ2cvg-ORwnKcnyjxeA-Npl_alW2GK8Tw"
-API_KEY = "YPZLLME4OTH6V88M"
+TOKEN = "8371364402:AAGeGPnHgJeF4tzu-N4e9wz57KS0mnyi2V0"
+API_KEY = "70f12cfac5e34ee3bc35f124ec37d547"
 
 WARNING = "\n⚠️ البوت لغرض التعلم فقط والتداول تحت مسؤوليتك الشخصية"
 
-BASE_URL = "https://www.alphavantage.co/query"
+BASE = "https://api.twelvedata.com/time_series"
 
 # ================= DATA =================
 
-def get_price(symbol):
+def get_df(symbol, interval):
     params = {
-        "function": "GLOBAL_QUOTE",
         "symbol": symbol,
-        "apikey": API_KEY
+        "interval": interval,
+        "apikey": API_KEY,
+        "outputsize": 200
     }
-    r = requests.get(BASE_URL, params=params).json()
+    r = requests.get(BASE, params=params).json()
 
-    try:
-        return float(r["Global Quote"]["05. price"])
-    except:
+    if "values" not in r:
         return None
 
+    df = pd.DataFrame(r["values"])
+    df = df.astype(float)
+    df = df.iloc[::-1]
+    return df
 
-def get_candles(symbol):
-    params = {
-        "function": "TIME_SERIES_INTRADAY",
-        "symbol": symbol,
-        "interval": "5min",
-        "outputsize": "compact",
-        "apikey": API_KEY
-    }
+# ================= INDICATORS =================
 
-    r = requests.get(BASE_URL, params=params).json()
+def ema(series, n):
+    return series.ewm(span=n).mean()
 
-    try:
-        data = r["Time Series (5min)"]
-        df = pd.DataFrame.from_dict(data, orient="index").astype(float)
-        df = df.rename(columns={
-            "1. open": "open",
-            "2. high": "high",
-            "3. low": "low",
-            "4. close": "close",
-            "5. volume": "volume"
-        })
-        return df.sort_index()
-    except:
-        return None
+def trend(df):
+    e50 = ema(df["close"], 50)
+    e200 = ema(df["close"], 200)
 
-
-# ================= ANALYSIS =================
-
-def detect_trend(df):
-    short = df["close"].rolling(10).mean()
-    long = df["close"].rolling(30).mean()
-
-    if short.iloc[-1] > long.iloc[-1]:
+    if e50.iloc[-1] > e200.iloc[-1]:
         return "صاعد 📈"
-    elif short.iloc[-1] < long.iloc[-1]:
+    elif e50.iloc[-1] < e200.iloc[-1]:
         return "هابط 📉"
     else:
         return "متذبذب ⚖️"
 
-
 def support_resistance(df):
-    support = round(df["low"].tail(40).min(), 2)
-    resistance = round(df["high"].tail(40).max(), 2)
+    support = round(df["low"].tail(40).min(),2)
+    resistance = round(df["high"].tail(40).max(),2)
     return support, resistance
 
-
-# ================= MAIN =================
+# ================= ANALYSIS =================
 
 def analyze(symbol):
 
-    price = get_price(symbol)
+    df_fast = get_df(symbol,"5min")
+    df_day = get_df(symbol,"1h")
+    df_week = get_df(symbol,"1day")
 
-    if not price:
-        return "❌ لم يتم جلب السعر حالياً"
+    if df_fast is None:
+        return "❌ لم يتم جلب البيانات (تحقق من الرمز)"
 
-    df = get_candles(symbol)
+    price = round(df_fast["close"].iloc[-1],2)
 
-    if df is None or len(df) < 30:
-        return "❌ لم يتم جلب البيانات الفنية حالياً"
+    trend_fast = trend(df_fast)
+    trend_general = trend(df_week)
 
-    trend = detect_trend(df)
-    support, resistance = support_resistance(df)
+    sup_day, res_day = support_resistance(df_day)
+    sup_week, res_week = support_resistance(df_week)
+
+    market_state = "ترند" if trend_fast == trend_general else "متذبذب"
+
+    # أهداف ذكية حسب الاتجاه
+    if "صاعد" in trend_general:
+        targets = [
+            res_day,
+            round(res_day + (res_day-sup_day)*0.5,2),
+            round(res_day + (res_day-sup_day),2)
+        ]
+        stop = sup_day
+        target_text = f"""
+🎯 أهداف الصعود:
+• {targets[0]}
+• {targets[1]}
+• {targets[2]}
+🛑 وقف الخسارة: {stop}
+"""
+    elif "هابط" in trend_general:
+        targets = [
+            sup_day,
+            round(sup_day - (res_day-sup_day)*0.5,2),
+            round(sup_day - (res_day-sup_day),2)
+        ]
+        stop = res_day
+        target_text = f"""
+🎯 أهداف الهبوط:
+• {targets[0]}
+• {targets[1]}
+• {targets[2]}
+🛑 وقف الخسارة: {stop}
+"""
+    else:
+        target_text = "⚠️ السوق متذبذب — يفضل الانتظار"
 
     text = f"""
 📌 الرمز: {symbol}
-💵 السعر الحالي: {round(price,2)}
+💵 السعر الحالي: {price}
 
-📉 الدعم: {support}
-📈 المقاومة: {resistance}
+📍 الدعم اليومي: {sup_day}
+📍 المقاومة اليومية: {res_day}
 
-━━━━━━━━━━
+📍 الدعم الأسبوعي: {sup_week}
+📍 المقاومة الأسبوعية: {res_week}
 
-📊 الاتجاه: {trend}
+━━━━━━━━━━━━━━
 
+📈 الاتجاه العام: {trend_general}
+⚡ الاتجاه اللحظي: {trend_fast}
+📊 حالة السوق: {market_state}
+
+{target_text}
 {WARNING}
 """
 
     return text
 
-
 # ================= TELEGRAM =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 أهلاً بك في Radar Market الأسطوري\n"
-        "أرسل رمز السهم مثل:\n"
+        "👋 أهلاً بك في Radar Market المؤسسي\n"
+        "أرسل رمز أي سهم أو مؤشر مثل:\n"
         "TSLA\nAAPL\nSPX\nNDX"
         + WARNING
     )
 
-
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = update.message.text.upper().strip()
-    result = analyze(symbol)
-    await update.message.reply_text(result)
-
+    try:
+        result = analyze(symbol)
+        await update.message.reply_text(result)
+    except:
+        await update.message.reply_text("❌ خطأ في التحليل")
 
 # ================= RUN =================
 
 app = ApplicationBuilder().token(TOKEN).build()
-
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-print("BOT RUNNING...")
-
+print("✅ BOT RUNNING ...")
 app.run_polling()
