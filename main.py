@@ -4,10 +4,12 @@ import numpy as np
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
+# ================== CONFIG ==================
+
 TOKEN = "8371364402:AAGeGPnHgJeF4tzu-N4e9wz57KS0mnyi2V0"
 API_KEY = "499390a50ae1446e849a83e418c1857f"
 
-BASE = "https://api.twelvedata.com/time_series"
+BASE_URL = "https://api.twelvedata.com/time_series"
 
 WELCOME = """👋 أهلاً بك في 🤖 Radar Market 🤖
 
@@ -22,18 +24,17 @@ NDX
 وضع لغرض التعلم فقط ✋🏻
 """
 
+# ================== DATA ==================
 
-# ================= DATA =================
-
-def get_data(symbol):
+def get_data(symbol, interval="5min"):
     params = {
         "symbol": symbol,
-        "interval": "5min",
+        "interval": interval,
         "apikey": API_KEY,
-        "outputsize": 200
+        "outputsize": 300
     }
 
-    r = requests.get(BASE, params=params).json()
+    r = requests.get(BASE_URL, params=params).json()
 
     if "values" not in r:
         return None
@@ -45,91 +46,115 @@ def get_data(symbol):
     return df
 
 
-# ================= INDICATORS =================
+# ================== INDICATORS ==================
 
 def ema(series, n):
     return series.ewm(span=n).mean()
 
-def rsi(series, period=14):
+def rsi(series, n=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+
+    avg_gain = gain.rolling(n).mean()
+    avg_loss = loss.rolling(n).mean()
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 
-# ================= ANALYSIS =================
-
 def analyze(df):
+
     close = df["close"]
 
-    ema20 = ema(close, 20).iloc[-1]
-    ema50 = ema(close, 50).iloc[-1]
+    ema20 = ema(close,20)
+    ema50 = ema(close,50)
 
     rsi_val = rsi(close).iloc[-1]
 
     price = close.iloc[-1]
 
-    trend = "صاعد 📈" if ema20 > ema50 else "هابط 📉"
+    trend = "📉 هابط" if ema20.iloc[-1] < ema50.iloc[-1] else "📈 صاعد"
 
     support = close.tail(50).min()
     resistance = close.tail(50).max()
 
-    momentum = "قوي 🚀" if rsi_val > 60 else "ضعيف ⚠️" if rsi_val < 40 else "متوازن ⚖️"
+    liquidity_low = support * 0.995
+    liquidity_high = resistance * 1.005
 
-    target1 = price + (resistance - support) * 0.3
-    target2 = price + (resistance - support) * 0.6
+    target_short = price + (resistance-price)*0.5
+    target_long = resistance
 
-    stop = support
+    stop_loss = support
 
-    text = f"""
-📊 تحليل احترافي
-
-السعر الحالي: {price:.2f}
-الاتجاه: {trend}
-الزخم: {momentum}
-
-🧱 دعم: {support:.2f}
-🚧 مقاومة: {resistance:.2f}
-
-🎯 أهداف مضاربية:
-1️⃣ {target1:.2f}
-2️⃣ {target2:.2f}
-
-⛔ وقف الخسارة: {stop:.2f}
-"""
-
-    return text
+    return {
+        "price": price,
+        "trend": trend,
+        "rsi": round(rsi_val,1),
+        "support": round(support,2),
+        "resistance": round(resistance,2),
+        "liq_low": round(liquidity_low,2),
+        "liq_high": round(liquidity_high,2),
+        "target1": round(target_short,2),
+        "target2": round(target_long,2),
+        "stop": round(stop_loss,2)
+    }
 
 
-# ================= HANDLERS =================
+# ================== BOT ==================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME)
 
-async def analyze_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def handle_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     symbol = update.message.text.strip().upper()
+
+    await update.message.reply_text("⏳ جاري التحليل العميق...")
 
     df = get_data(symbol)
 
     if df is None:
-        await update.message.reply_text("❌ الرمز غير صحيح أو لا توجد بيانات حالياً")
+        await update.message.reply_text("❌ لم يتم العثور على الرمز")
         return
 
-    result = analyze(df)
+    a = analyze(df)
 
-    await update.message.reply_text(result)
+    msg = f"""
+📊 تحليل {symbol}
+
+💰 السعر الحالي: {a['price']}
+
+📈 الاتجاه: {a['trend']}
+📉 RSI: {a['rsi']}
+
+🟢 دعم قوي: {a['support']}
+🔴 مقاومة قوية: {a['resistance']}
+
+💧 مناطق السيولة:
+⬇️ {a['liq_low']}
+⬆️ {a['liq_high']}
+
+🎯 أهداف مضاربة:
+هدف لحظي: {a['target1']}
+هدف ممتد: {a['target2']}
+
+🛑 وقف خسارة: {a['stop']}
+
+⚠️ التزم بالإدارة المالية
+"""
+
+    await update.message.reply_text(msg)
 
 
-# ================= RUN =================
+# ================== RUN ==================
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_symbol))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_symbol))
 
     print("Radar Market Bot Running...")
 
