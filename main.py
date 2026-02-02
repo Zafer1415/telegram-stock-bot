@@ -1,25 +1,35 @@
 import requests
 import pandas as pd
+import numpy as np
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
+# ================= CONFIG =================
+
 TOKEN = "8371364402:AAGeGPnHgJeF4tzu-N4e9wz57KS0mnyi2V0"
-API_KEY = "70f12cfac5e34ee3bc35f124ec37d547"
+API_KEY = "499390a50ae1446e849a83e418c1857f"
 
-WARNING = "\n⚠️ البوت لغرض التعلم فقط والتداول تحت مسؤوليتك الشخصية"
+BASE_URL = "https://api.twelvedata.com"
 
-BASE = "https://api.twelvedata.com/time_series"
+WARNING = "\n⚠️ البوت لا يقدم أي استشارات مالية أو توصيات تداول إطلاقاً\nوضع لغرض التعلم فقط ✋🏻"
 
 # ================= DATA =================
 
-def get_df(symbol, interval):
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "apikey": API_KEY,
-        "outputsize": 200
-    }
-    r = requests.get(BASE, params=params).json()
+def get_price(symbol):
+    r = requests.get(f"{BASE_URL}/price?symbol={symbol}&apikey={API_KEY}",timeout=10).json()
+    return float(r["price"]) if "price" in r else None
+
+def get_candles(symbol, interval):
+    r = requests.get(
+        f"{BASE_URL}/time_series",
+        params={
+            "symbol": symbol,
+            "interval": interval,
+            "apikey": API_KEY,
+            "outputsize": 200
+        },
+        timeout=10
+    ).json()
 
     if "values" not in r:
         return None
@@ -27,121 +37,182 @@ def get_df(symbol, interval):
     df = pd.DataFrame(r["values"])
     df = df.astype(float)
     df = df.iloc[::-1]
+
     return df
 
 # ================= INDICATORS =================
 
-def ema(series, n):
-    return series.ewm(span=n).mean()
+def ma(series,n):
+    return series.rolling(n).mean()
 
-def trend(df):
-    e50 = ema(df["close"], 50)
-    e200 = ema(df["close"], 200)
-
-    if e50.iloc[-1] > e200.iloc[-1]:
-        return "صاعد 📈"
-    elif e50.iloc[-1] < e200.iloc[-1]:
-        return "هابط 📉"
-    else:
-        return "متذبذب ⚖️"
+def rsi(series,period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    rs = gain.rolling(period).mean() / loss.rolling(period).mean()
+    return 100 - (100/(1+rs))
 
 def support_resistance(df):
-    support = round(df["low"].tail(40).min(),2)
-    resistance = round(df["high"].tail(40).max(),2)
-    return support, resistance
+    return round(df["low"].tail(40).min(),2), round(df["high"].tail(40).max(),2)
+
+def liquidity(df):
+    avg = df["volume"].mean()
+    last = df["volume"].iloc[-1]
+
+    if last > avg*1.3:
+        return "دخول سيولة 💧"
+    elif last < avg*0.7:
+        return "خروج سيولة ❄️"
+    else:
+        return "سيولة طبيعية ⚖️"
+
+# ================= TREND =================
+
+def trend(df):
+    m20 = ma(df["close"],20)
+    m50 = ma(df["close"],50)
+
+    if m20.iloc[-1] > m50.iloc[-1]:
+        return "شراء 📈"
+    elif m20.iloc[-1] < m50.iloc[-1]:
+        return "بيع 📉"
+    else:
+        return "انتظار ⚖️"
+
+def saturation(df):
+    r = rsi(df["close"]).iloc[-1]
+
+    if r > 70:
+        return "تشبع شرائي 🔴"
+    elif r < 30:
+        return "تشبع بيعي 🟢"
+    else:
+        return "طبيعي ⚪"
+
+# ================= TARGETS =================
+
+def build_targets(price, direction, support, resistance):
+    rng = abs(resistance-support)
+
+    if "شراء" in direction:
+        up = [
+            round(resistance,2),
+            round(resistance + rng*0.5,2),
+            round(resistance + rng,2)
+        ]
+        stop = round(price - rng*0.25,2)
+        return up, [], stop
+
+    if "بيع" in direction:
+        down = [
+            round(support,2),
+            round(support - rng*0.5,2),
+            round(support - rng,2)
+        ]
+        stop = round(price + rng*0.25,2)
+        return [], down, stop
+
+    return [], [], None
 
 # ================= ANALYSIS =================
 
 def analyze(symbol):
 
-    df_fast = get_df(symbol,"5min")
-    df_day = get_df(symbol,"1h")
-    df_week = get_df(symbol,"1day")
+    price = get_price(symbol)
+    if not price:
+        return "❌ رمز السهم غير صحيح"
 
-    if df_fast is None:
-        return "❌ لم يتم جلب البيانات (تحقق من الرمز)"
+    df_fast = get_candles(symbol,"5min")
+    df_day  = get_candles(symbol,"1h")
+    df_week = get_candles(symbol,"1day")
 
-    price = round(df_fast["close"].iloc[-1],2)
+    if df_fast is None or df_day is None or df_week is None:
+        return "⚠️ خطأ في النظام جاري تحديث النظام وشكراً 🙏"
 
-    trend_fast = trend(df_fast)
+    support_day, resistance_day = support_resistance(df_day)
+    support_week, resistance_week = support_resistance(df_week)
+
     trend_general = trend(df_week)
+    trend_live = trend(df_fast)
 
-    sup_day, res_day = support_resistance(df_day)
-    sup_week, res_week = support_resistance(df_week)
+    market_state = "ترند" if trend_general == trend_live else "متذبذب"
 
-    market_state = "ترند" if trend_fast == trend_general else "متذبذب"
+    liq = liquidity(df_fast)
+    sat = saturation(df_fast)
 
-    # أهداف ذكية حسب الاتجاه
-    if "صاعد" in trend_general:
-        targets = [
-            res_day,
-            round(res_day + (res_day-sup_day)*0.5,2),
-            round(res_day + (res_day-sup_day),2)
-        ]
-        stop = sup_day
-        target_text = f"""
-🎯 أهداف الصعود:
-• {targets[0]}
-• {targets[1]}
-• {targets[2]}
-🛑 وقف الخسارة: {stop}
-"""
-    elif "هابط" in trend_general:
-        targets = [
-            sup_day,
-            round(sup_day - (res_day-sup_day)*0.5,2),
-            round(sup_day - (res_day-sup_day),2)
-        ]
-        stop = res_day
-        target_text = f"""
-🎯 أهداف الهبوط:
-• {targets[0]}
-• {targets[1]}
-• {targets[2]}
-🛑 وقف الخسارة: {stop}
-"""
-    else:
-        target_text = "⚠️ السوق متذبذب — يفضل الانتظار"
+    up_targets, down_targets, stop = build_targets(
+        price,
+        trend_general,
+        support_day,
+        resistance_day
+    )
 
     text = f"""
-📌 الرمز: {symbol}
-💵 السعر الحالي: {price}
+🤖 Radar Market 🤖
 
-📍 الدعم اليومي: {sup_day}
-📍 المقاومة اليومية: {res_day}
+💵 السعر الحالي: {round(price,2)}
 
-📍 الدعم الأسبوعي: {sup_week}
-📍 المقاومة الأسبوعية: {res_week}
+━━━━━━━━━━━━━━
+
+📍 دعم يومي: {support_day}
+📍 مقاومة يومية: {resistance_day}
+
+📍 دعم أسبوعي: {support_week}
+📍 مقاومة أسبوعية: {resistance_week}
 
 ━━━━━━━━━━━━━━
 
 📈 الاتجاه العام: {trend_general}
-⚡ الاتجاه اللحظي: {trend_fast}
+⚡ الاتجاه اللحظي: {trend_live}
 📊 حالة السوق: {market_state}
 
-{target_text}
-{WARNING}
+💧 السيولة: {liq}
+📊 التشبع: {sat}
+
+━━━━━━━━━━━━━━
 """
 
-    return text
+    if up_targets:
+        text += f"""
+🎯 أهداف الصعود:
+• {up_targets[0]}
+• {up_targets[1]}
+• {up_targets[2]}
+
+🛑 وقف الخسارة:
+• {stop}
+"""
+
+    if down_targets:
+        text += f"""
+🎯 أهداف الهبوط:
+• {down_targets[0]}
+• {down_targets[1]}
+• {down_targets[2]}
+
+🛑 وقف الخسارة:
+• {stop}
+"""
+
+    return text + WARNING
 
 # ================= TELEGRAM =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 أهلاً بك في Radar Market المؤسسي\n"
-        "أرسل رمز أي سهم أو مؤشر مثل:\n"
-        "TSLA\nAAPL\nSPX\nNDX"
-        + WARNING
+        "👋 أهلاً بك في 🤖 Radar Market 🤖\n\n"
+        "أرسل رمز السهم أو المؤشر مثل:\n"
+        "TSLA\nAAPL\nMETA\nSPX\nNDX\n\n"
+        "⚠️ البوت لا يقدم أي استشارات مالية أو توصيات تداول إطلاقاً\n"
+        "وضع لغرض التعلم فقط ✋🏻"
     )
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = update.message.text.upper().strip()
     try:
-        result = analyze(symbol)
-        await update.message.reply_text(result)
+        await update.message.reply_text(analyze(symbol))
     except:
-        await update.message.reply_text("❌ خطأ في التحليل")
+        await update.message.reply_text("⚠️ خطأ في النظام جاري تحديث النظام وشكراً 🙏")
 
 # ================= RUN =================
 
@@ -149,5 +220,6 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-print("✅ BOT RUNNING ...")
+print("Radar Market Running...")
+
 app.run_polling()
