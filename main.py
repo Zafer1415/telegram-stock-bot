@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 TOKEN = "8371364402:AAGeGPnHgJeF4tzu-N4e9wz57KS0mnyi2V0"
 API_KEY = "499390a50ae1446e849a83e418c1857f"
 
-BASE = "https://api.twelvedata.com/time_series"
+BASE_URL = "https://api.twelvedata.com/time_series"
 
 WELCOME = """👋 أهلاً بك في 🤖 Radar Market 🤖
 
@@ -18,20 +18,21 @@ META
 SPX
 NDX
 
-⚠️ البوت لا يقدم أي استشارات مالية أو توصيات تداول إطلاقاً  
+⚠️ البوت لا يقدم أي استشارات مالية إطلاقاً
 وضع لغرض التعلم فقط ✋🏻
 """
 
-# ================== DATA ==================
+# ===================== DATA =====================
 
-def fetch(symbol, interval="5min"):
+def get_data(symbol):
     params = {
         "symbol": symbol,
-        "interval": interval,
+        "interval": "5min",
         "apikey": API_KEY,
         "outputsize": 200
     }
-    r = requests.get(BASE, params=params).json()
+
+    r = requests.get(BASE_URL, params=params).json()
 
     if "values" not in r:
         return None
@@ -39,10 +40,10 @@ def fetch(symbol, interval="5min"):
     df = pd.DataFrame(r["values"])
     df = df.astype(float)
     df = df.iloc[::-1]
+
     return df
 
-
-# ================== INDICATORS ==================
+# ===================== INDICATORS =====================
 
 def ema(series, n):
     return series.ewm(span=n).mean()
@@ -58,64 +59,48 @@ def rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def liquidity_zones(df):
-    high_zone = df["high"].rolling(20).max().iloc[-1]
-    low_zone = df["low"].rolling(20).min().iloc[-1]
-    return high_zone, low_zone
-
-
-# ================== ANALYSIS ==================
-
-def analyze(symbol):
-    df = fetch(symbol)
-
-    if df is None or len(df) < 50:
-        return "⚠️ البيانات غير متوفرة حالياً حاول بعد قليل"
-
+def analyze(df):
     close = df["close"]
 
-    ema50 = ema(close, 50).iloc[-1]
-    ema200 = ema(close, 200).iloc[-1]
-    rsi_val = rsi(close).iloc[-1]
+    df["EMA20"] = ema(close, 20)
+    df["EMA50"] = ema(close, 50)
+    df["RSI"] = rsi(close)
 
     price = close.iloc[-1]
 
-    high_liq, low_liq = liquidity_zones(df)
+    trend = "صاعد 🚀" if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] else "هابط 🔻"
 
-    trend = "📈 صاعد" if ema50 > ema200 else "📉 هابط"
+    momentum = "قوي 💥" if df["RSI"].iloc[-1] > 60 else "ضعيف ⚠️"
 
-    momentum = "قوي" if rsi_val > 60 else "ضعيف" if rsi_val < 40 else "متوازن"
+    support = close.tail(50).min()
+    resistance = close.tail(50).max()
 
-    target_near = price * 1.01 if trend == "📈 صاعد" else price * 0.99
-    target_far = price * 1.03 if trend == "📈 صاعد" else price * 0.97
-    stop = price * 0.985 if trend == "📈 صاعد" else price * 1.015
+    target_fast = price + (price - support)
+    target_long = price + (resistance - support)
 
-    msg = f"""
-📊 تحليل احترافي لـ {symbol}
+    stop = support
 
-💰 السعر الحالي: {price:.2f}
-📈 الاتجاه العام: {trend}
+    report = f"""
+📊 تحليل احترافي فوري
+
+💵 السعر الحالي: {price:.2f}
+📈 الاتجاه: {trend}
 ⚡ الزخم: {momentum}
-📉 RSI: {rsi_val:.2f}
 
-💧 مناطق السيولة:
-🔼 سيولة عليا: {high_liq:.2f}
-🔽 سيولة سفلى: {low_liq:.2f}
+🟢 منطقة دعم: {support:.2f}
+🔴 منطقة مقاومة: {resistance:.2f}
 
-🎯 أهداف مضاربية:
-➡️ هدف قريب: {target_near:.2f}
-➡️ هدف ممتد: {target_far:.2f}
+🎯 هدف مضاربي سريع: {target_fast:.2f}
+🎯 هدف ممتد بالزخم: {target_long:.2f}
 
-🛑 وقف خسارة ذكي:
-{stop:.2f}
+🛑 وقف الخسارة: {stop:.2f}
 
-⚠️ التزم بإدارة رأس المال دائماً
+⚠️ الاكتفاء بهدف مع الالتزام بوقف الخسارة
 """
 
-    return msg
+    return report
 
-
-# ================== TELEGRAM ==================
+# ===================== TELEGRAM =====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME)
@@ -125,13 +110,17 @@ async def handle_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("⏳ جاري التحليل الاحترافي...")
 
-    try:
-        result = analyze(symbol)
-    except Exception as e:
-        result = "⚠️ حصل خطأ أثناء التحليل حاول لاحقاً"
+    df = get_data(symbol)
+
+    if df is None:
+        await update.message.reply_text("❌ الرمز غير صحيح أو البيانات غير متوفرة")
+        return
+
+    result = analyze(df)
 
     await update.message.reply_text(result)
 
+# ===================== RUN =====================
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -139,9 +128,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_symbol))
 
-    print("Bot running...")
-    app.run_polling()
+    print("Radar Market Bot Running...")
 
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
