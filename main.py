@@ -1,29 +1,33 @@
 import requests
 import pandas as pd
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
-
-# ================== CONFIG ==================
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = "8371364402:AAGeGPnHgJeF4tzu-N4e9wz57KS0mnyi2V0"
 API_KEY = "499390a50ae1446e849a83e418c1857f"
 
 BASE_URL = "https://api.twelvedata.com/time_series"
 
-WARNING = "⚠️ البوت للتعلم فقط ولا يقدم أي توصيات مالية"
+WELCOME_MSG = """👋 أهلاً بك في 🤖 Radar Market 🤖
 
-# ================== DATA ==================
+أرسل رمز السهم أو المؤشر مثل:
+TSLA
+AAPL
+META
+SPX
+NDX
 
-def get_data(symbol, interval="5min"):
+⚠️ البوت لا يقدم أي استشارات مالية أو توصيات تداول إطلاقاً  
+وضع لغرض التعلم فقط ✋🏻
+"""
+
+
+# ================= DATA =================
+
+def get_data(symbol):
     params = {
         "symbol": symbol,
-        "interval": interval,
+        "interval": "5min",
         "apikey": API_KEY,
         "outputsize": 200
     }
@@ -40,63 +44,41 @@ def get_data(symbol, interval="5min"):
     return df
 
 
-# ================== ANALYSIS ==================
+# ================= ANALYSIS =================
 
 def analyze(df):
     close = df["close"]
 
-    ema20 = close.ewm(span=20).mean().iloc[-1]
-    ema50 = close.ewm(span=50).mean().iloc[-1]
+    ema20 = close.ewm(span=20).mean()
+    ema50 = close.ewm(span=50).mean()
+
+    trend = "صاعد 📈" if ema20.iloc[-1] > ema50.iloc[-1] else "هابط 📉"
+
+    high = df["high"].max()
+    low = df["low"].min()
+
     price = close.iloc[-1]
 
-    trend = "📈 صاعد قوي" if ema20 > ema50 else "📉 هابط قوي"
+    target1 = price * 1.01
+    target2 = price * 1.03
 
-    support = df["low"].rolling(20).min().iloc[-1]
-    resistance = df["high"].rolling(20).max().iloc[-1]
+    stop = price * 0.98
 
-    target1 = resistance
-    target2 = resistance + (resistance - support)
-
-    stop = support
-
-    msg = f"""
-📊 تحليل احترافي
-
-السعر الحالي: {price:.2f}
-
-الإتجاه: {trend}
-
-🟢 دعم قوي: {support:.2f}
-🔴 مقاومة قوية: {resistance:.2f}
-
-🎯 هدف لحظي: {target1:.2f}
-🎯 هدف ممتد: {target2:.2f}
-
-🛑 وقف خسارة: {stop:.2f}
-
-{WARNING}
-"""
-
-    return msg
+    return {
+        "trend": trend,
+        "price": round(price, 2),
+        "high": round(high, 2),
+        "low": round(low, 2),
+        "t1": round(target1, 2),
+        "t2": round(target2, 2),
+        "stop": round(stop, 2)
+    }
 
 
-# ================== BOT ==================
+# ================= HANDLERS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-"""👋 أهلاً بك في 🤖 Radar Market 🤖
-
-أرسل رمز السهم أو المؤشر مثل:
-TSLA
-AAPL
-META
-SPX
-NDX
-
-⚠️ البوت لا يقدم أي استشارات مالية إطلاقاً
-لغرض التعلم فقط ✋🏻
-"""
-    )
+    await update.message.reply_text(WELCOME_MSG)
 
 
 async def handle_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,14 +87,32 @@ async def handle_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     df = get_data(symbol)
 
     if df is None:
-        await update.message.reply_text("❌ لم أستطع جلب البيانات حالياً")
+        await update.message.reply_text("❌ لم يتم العثور على بيانات لهذا الرمز")
         return
 
-    analysis = analyze(df)
-    await update.message.reply_text(analysis)
+    a = analyze(df)
+
+    msg = f"""
+📊 تحليل {symbol}
+
+السعر الحالي: {a['price']}
+الاتجاه: {a['trend']}
+
+📍 أعلى منطقة: {a['high']}
+📍 أدنى منطقة: {a['low']}
+
+🎯 هدف مضارب: {a['t1']}
+🎯 هدف ممتد: {a['t2']}
+
+🛑 وقف خسارة: {a['stop']}
+
+⚠️ التزم بإدارة رأس المال
+"""
+
+    await update.message.reply_text(msg)
 
 
-# ================== RUN ==================
+# ================= RUN =================
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -120,7 +120,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_symbol))
 
-    print("Bot running...")
+    print("Bot is running...")
     app.run_polling()
 
 
